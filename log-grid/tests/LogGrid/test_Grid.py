@@ -17,7 +17,7 @@ from typing import Callable
 from pyloggrid.Libs.datasci import randcomplex, randcomplex_like
 from pyloggrid.Libs.misc import composed_decs
 from pyloggrid.LogGrid.DataExplorer import DataExplorer
-from pyloggrid.LogGrid.Framework import Solver
+from pyloggrid.LogGrid.Framework import ETD35, Solver
 from pyloggrid.LogGrid.Grid import Grid
 
 grids_cache = []
@@ -770,3 +770,22 @@ class Test3DEuler:
 
         dexp = DataExplorer(save_path)
         dexp.display(draw_funcs=draw_funcs, N_points=1000, n_jobs=1)
+
+
+class TestIntegrators:
+    def test_etd35_wrapper_supports_current_rkstiff_api(self):
+        ode = ETD35(
+            equation_nl=lambda _t, y: -y,
+            equation_l=lambda _t, _y: np.array([0.0]),
+            save_step=lambda _t, _dt, _y: True,
+            init_t=0.0,
+            solver_params={"rtol": 1e-2, "adapt_cutoff": 1e-2, "minh": 1e-16},
+            y0=np.array([1.0 + 0.0j]),
+            dt_params={"dt0": 0.1},
+        )
+
+        y_new, h, h_new_suggested = ode.rk()
+
+        assert np.isfinite(y_new).all()
+        assert np.isclose(h, 0.1)
+        assert h_new_suggested > 0

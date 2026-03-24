@@ -24,6 +24,11 @@ from typing import Callable, Optional, Union
 
 from rkstiff import etd35
 
+try:
+    from rkstiff.solveras import SolverConfig
+except ImportError:  # pragma: no cover - compatibility with older rkstiff releases
+    SolverConfig = None
+
 from pyloggrid.Libs.custom_logger import setup_custom_logger
 from pyloggrid.Libs.IOLib import load_step, read_json_settings, save_step, update_json_settings
 from pyloggrid.Libs.misc import TimeTracker
@@ -511,13 +516,23 @@ class ETD35(_CustIntegrator):
         t = self.t
         y = self.y
 
-        solver = etd35.ETD35(
-            linop=self.equation_l(t, y),
-            NLfunc=lambda y_: self.equation_nl(t, y_),
-            epsilon=self.rtol,
-            adapt_cutoff=self.adapt_cutoff,
-            minh=self.minh,
-        )
+        lin_op = self.equation_l(t, y)
+        nl_func = lambda y_: self.equation_nl(t, y_)
+
+        if SolverConfig is not None:
+            solver = etd35.ETD35(
+                lin_op=lin_op,
+                nl_func=nl_func,
+                config=SolverConfig(epsilon=self.rtol, adapt_cutoff=self.adapt_cutoff, minh=self.minh),
+            )
+        else:  # pragma: no cover - compatibility with older rkstiff releases
+            solver = etd35.ETD35(
+                linop=lin_op,
+                NLfunc=nl_func,
+                epsilon=self.rtol,
+                adapt_cutoff=self.adapt_cutoff,
+                minh=self.minh,
+            )
         y_new, h, h_new_suggested = solver.step(y, self.dt_suggested)
 
         self.stopsim = self.save_step(t + h, h, y_new)
