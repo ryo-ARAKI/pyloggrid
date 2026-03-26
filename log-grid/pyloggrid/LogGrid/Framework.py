@@ -682,6 +682,8 @@ class Solver:
 
         save_step(path, step=self.step, grid=self.grid, t=t, dt=dt, time_tracker=self.time_tracker)
         update_json_settings(path, {"N_steps": self.step, "N_ode_steps": self.ode_step}, update=True)
+        if getattr(self, "after_save_cb", None) is not None:
+            self.after_save_cb(self.grid, t, dt, path, self.step, self.ode_step)
 
     def solve(
         self,
@@ -693,6 +695,7 @@ class Solver:
         save_one_in: float = 1,
         update_gridsize_cb: Optional[Callable[[Grid], Optional[int]]] = None,
         dt_params: dict[str, Optional[float]] = None,
+        after_save_cb: Optional[Callable[[Grid, float, float, str, int, int], None]] = None,
         solver: typing.Literal["ViscDopri", "ETD4RK", "ETD35"] = "ETD35",
     ) -> None:
         """Solve the solver's equation with the provided numerical parameters.
@@ -708,6 +711,7 @@ class Solver:
             save_one_in: save one step to file every X ``ode_step``
             update_gridsize_cb: optional callback to change the grid size after a step. Returns ``None`` if no change is to be made, returns the new grid size otherwise.
             dt_params: ``{dt0: initial timestep, dtmin, dtmax}``
+            after_save_cb: optional callback run immediately after each saved step with ``(grid, t, dt, save_path, step, ode_step)``
             solver: ``"ETD35"`` for :class:`ETD35` (default), ``"ETD4RK"`` for :class:`ETD4RK`, ``"ViscDopri"`` for :class:`ViscDopri`
 
         Details on a few parameters
@@ -730,6 +734,7 @@ class Solver:
             "ode_step": end_simulation["ode_step"] if "ode_step" in end_simulation else None,
         }
         self.end_simulation = end_simulation
+        self.after_save_cb = after_save_cb
 
         # Initial conditions (IC)
         if callable(initial_conditions):
@@ -860,6 +865,7 @@ class Solver:
                     end_simulation=end_simulation,
                     dt_params=dt_params,
                     update_gridsize_cb=update_gridsize_cb,
+                    after_save_cb=after_save_cb,
                     solver=solver,
                 )
                 raise SolverInterruptedError()
