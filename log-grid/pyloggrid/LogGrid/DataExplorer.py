@@ -3,12 +3,7 @@
 import logging
 import os
 import typing
-from typing import Any, Callable, Optional, TypedDict, TypeVar
-
-try:
-    from typing import NotRequired
-except ImportError:  # Python < 3.11
-    from typing_extensions import NotRequired
+from typing import Any, Callable, NotRequired, Optional, TypedDict, TypeVar
 
 if typing.TYPE_CHECKING:  # for Sphinx
     import numpy as np
