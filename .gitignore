@@ -27,3 +27,8 @@ log-grid/*
 
 # Exclude top-level pre-commit
 .pre-commit-config.yaml
+
+# Ignore local Python cache/build artifacts inside the tracked source tree
+log-grid/pyloggrid/**/__pycache__/
+log-grid/pyloggrid/LogGrid/*.so
+log-grid/pyloggrid/LogGrid/*.pyd
