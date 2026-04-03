@@ -34,6 +34,19 @@ static always_inline Complex ComplexAddMSVC(Complex a, Complex b) {
 }
 #endif
 
+static always_inline void atomic_add_complex(Complex *restrict arr_out, const uint32_t idx, const Complex x) {
+    #ifdef _MSC_VER
+        #pragma omp atomic
+        arr_out[idx] = ComplexAddMSVC(arr_out[idx], x);
+    #else
+        double *target = (double *)&arr_out[idx];
+        #pragma omp atomic update
+        target[0] += creal(x);
+        #pragma omp atomic update
+        target[1] += cimag(x);
+    #endif
+}
+
 static always_inline void convolve_inner(const size_t i, const uint32_t *restrict kernel, const Complex *restrict f, const Complex *restrict g, Complex *restrict arr_out) {
     Complex c1 = f[kernel[i + 1]];
     Complex c2 = g[kernel[i + 2]];
@@ -53,13 +66,7 @@ static always_inline void convolve_inner(const size_t i, const uint32_t *restric
             __builtin_unreachable();
     }
 
-    #ifdef _MSC_VER
-        #pragma omp atomic
-        arr_out[kernel[i]] = ComplexAddMSVC(arr_out[kernel[i]], x);
-    #else
-        #pragma omp atomic
-        arr_out[kernel[i]] += x;
-    #endif
+    atomic_add_complex(arr_out, kernel[i], x);
 }
 
 void convolve(const uint32_t *restrict kernel, const uint32_t kernel_N, const Complex *restrict f, const Complex *restrict g, Complex *restrict arr_out) {
@@ -82,6 +89,87 @@ void convolve_list_omp(const uint32_t *kernel, const uint32_t kernel_N, const Co
         #pragma omp parallel for schedule(static)
         for (i = 0; i < kernel_N; i += 4) {
             convolve_inner(i, kernel, f_list[i_batch], g_list[i_batch], &arr_out[i_batch *f_size]);
+        }
+    }
+}
+
+static always_inline Complex convolve_grouped_sum(
+    const uint32_t *restrict kernel,
+    const uint32_t start,
+    const uint32_t stop,
+    const Complex *restrict f,
+    const Complex *restrict g
+) {
+    Complex acc = 0;
+    uint32_t i;
+    Complex c1, c2;
+
+    for (i = start; i < stop; i += 4) {
+        c1 = f[kernel[i + 1]];
+        c2 = g[kernel[i + 2]];
+        switch (kernel[i + 3]) {
+            case 0:
+                acc += ComplexMult(c1, c2);
+                break;
+            case 1:
+                acc += ComplexMult(conj(c1), c2);
+                break;
+            case 2:
+                acc += ComplexMult(c1, conj(c2));
+                break;
+            default:
+                __builtin_unreachable();
+        }
+    }
+    return acc;
+}
+
+void convolve_grouped(
+    const uint32_t *restrict kernel,
+    const uint32_t *restrict row_ptr,
+    const uint32_t n_rows,
+    const Complex *restrict f,
+    const Complex *restrict g,
+    Complex *restrict arr_out
+) {
+    uint32_t row;
+    for (row = 0; row < n_rows; ++row) {
+        arr_out[row] = convolve_grouped_sum(kernel, row_ptr[row], row_ptr[row + 1], f, g);
+    }
+}
+
+void convolve_grouped_omp(
+    const uint32_t *restrict kernel,
+    const uint32_t *restrict row_ptr,
+    const uint32_t n_rows,
+    const Complex *restrict f,
+    const Complex *restrict g,
+    Complex *restrict arr_out
+) {
+    uint32_t row;
+    #pragma omp parallel for schedule(static)
+    for (row = 0; row < n_rows; ++row) {
+        arr_out[row] = convolve_grouped_sum(kernel, row_ptr[row], row_ptr[row + 1], f, g);
+    }
+}
+
+void convolve_batch_grouped_omp(
+    const uint32_t *restrict kernel,
+    const uint32_t *restrict row_ptr,
+    const uint32_t n_rows,
+    const Complex *restrict f_block,
+    const Complex *restrict g_block,
+    const uint32_t f_size,
+    const uint32_t n_batch,
+    Complex *restrict arr_out
+) {
+    uint32_t row, batch;
+    #pragma omp parallel for schedule(static) collapse(2)
+    for (row = 0; row < n_rows; ++row) {
+        for (batch = 0; batch < n_batch; ++batch) {
+            const Complex *f = &f_block[batch * f_size];
+            const Complex *g = &g_block[batch * f_size];
+            arr_out[batch * f_size + row] = convolve_grouped_sum(kernel, row_ptr[row], row_ptr[row + 1], f, g);
         }
     }
 }
@@ -124,13 +212,7 @@ static always_inline void convolve_list_batch_V_inner(const size_t i_batch, cons
     }
 
     for (size_t j=0; j<V; j++) {
-        #ifdef _MSC_VER
-            #pragma omp atomic
-            arr_out[(i_batch + j) * f_size + kernel[i]] = ComplexAddMSVC(arr_out[(i_batch + j) * f_size + kernel[i]], x[j]);
-        #else
-            #pragma omp atomic
-            arr_out[(i_batch + j) * f_size + kernel[i]] += x[j];
-        #endif
+        atomic_add_complex(arr_out, (i_batch + j) * f_size + kernel[i], x[j]);
     }
 
     #ifdef _MSC_VER

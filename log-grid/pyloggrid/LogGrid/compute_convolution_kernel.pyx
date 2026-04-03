@@ -49,6 +49,27 @@ cdef inline Py_ssize_t midx_3d(const short a, const short b, const short c, cons
     """3D to 1D coord"""
     return (a * nz + b) * ny + c
 
+cdef np.ndarray build_row_ptr(np.ndarray kernel, Py_ssize_t n_rows):
+    cdef np.ndarray row_ptr = np.zeros((n_rows + 1,), dtype=np.uint32)
+    cdef uint32_t[:, ::1] kernel_v = kernel
+    cdef uint32_t[::1] row_ptr_v = row_ptr
+    cdef Py_ssize_t i, n_entries
+    cdef uint32_t row
+
+    n_entries = kernel.shape[0]
+    for i in range(n_entries):
+        row = kernel_v[i, 0]
+        row_ptr_v[row + 1] += 4
+
+    for i in range(n_rows):
+        row_ptr_v[i + 1] += row_ptr_v[i]
+
+    return row_ptr
+
+cdef np.ndarray group_kernel_by_row(np.ndarray kernel):
+    cdef np.ndarray order = np.argsort(kernel[:, 0], kind="stable")
+    return kernel[order]
+
 cdef np.ndarray compute_interaction_kernel_1D_c(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, const bint has_k0, const short sx):
     cdef short sign_x0, sign_x1, coord_x0, coord_x1
     cdef uint32_t kernel_i = -1
@@ -90,6 +111,11 @@ cdef np.ndarray compute_interaction_kernel_1D_c(short[:, ::1] offsets_v, short[:
 
 cpdef np.ndarray compute_interaction_kernel_1D(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, const bint has_k0, const short sx):
     return compute_interaction_kernel_1D_c(offsets_v, signs_v, offsets_k0_v, signs_k0_v, has_k0, sx).flatten()
+
+cpdef tuple compute_interaction_kernel_1D_grouped(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, const bint has_k0, const short sx):
+    cdef np.ndarray kernel = group_kernel_by_row(compute_interaction_kernel_1D_c(offsets_v, signs_v, offsets_k0_v, signs_k0_v, has_k0, sx))
+    cdef np.ndarray row_ptr = build_row_ptr(kernel, sx)
+    return kernel.flatten(), row_ptr
 
 cdef np.ndarray compute_interaction_kernel_2D_c(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, short[:, ::1] offsets_k1_v, short[:, ::1] signs_k1_v, const bint has_k0, const short sx, const short sy):
     cdef short sign_x0, sign_x1, sign_y0, sign_y1, coord_x0, coord_x1, coord_y0, coord_y1
@@ -156,6 +182,11 @@ cdef np.ndarray compute_interaction_kernel_2D_c(short[:, ::1] offsets_v, short[:
 
 cpdef np.ndarray compute_interaction_kernel_2D(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, short[:, ::1] offsets_k1_v, short[:, ::1] signs_k1_v, const bint has_k0, const short sx, const short sy):
     return compute_interaction_kernel_2D_c(offsets_v, signs_v, offsets_k0_v, signs_k0_v, offsets_k1_v, signs_k1_v, has_k0, sx, sy).flatten()
+
+cpdef tuple compute_interaction_kernel_2D_grouped(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, short[:, ::1] offsets_k1_v, short[:, ::1] signs_k1_v, const bint has_k0, const short sx, const short sy):
+    cdef np.ndarray kernel = group_kernel_by_row(compute_interaction_kernel_2D_c(offsets_v, signs_v, offsets_k0_v, signs_k0_v, offsets_k1_v, signs_k1_v, has_k0, sx, sy))
+    cdef np.ndarray row_ptr = build_row_ptr(kernel, sx * sy)
+    return kernel.flatten(), row_ptr
 
 cdef np.ndarray compute_interaction_kernel_3D_c(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, short[:, ::1] offsets_k1_v, short[:, ::1] signs_k1_v, const bint has_k0, const short sx, const short sy, const short sz):
     cdef short sign_x0, sign_x1, sign_y0, sign_y1, sign_z0, sign_z1, coord_x0, coord_x1, coord_y0, coord_y1, coord_z0, coord_z1
@@ -247,3 +278,8 @@ cdef np.ndarray compute_interaction_kernel_3D_c(short[:, ::1] offsets_v, short[:
 
 cpdef np.ndarray compute_interaction_kernel_3D(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, short[:, ::1] offsets_k1_v, short[:, ::1] signs_k1_v, const bint has_k0, const short sx, const short sy, const short sz):
     return compute_interaction_kernel_3D_c(offsets_v, signs_v, offsets_k0_v, signs_k0_v, offsets_k1_v, signs_k1_v, has_k0, sx, sy, sz).flatten()
+
+cpdef tuple compute_interaction_kernel_3D_grouped(short[:, ::1] offsets_v, short[:, ::1] signs_v, short[:, ::1] offsets_k0_v, short[:, ::1] signs_k0_v, short[:, ::1] offsets_k1_v, short[:, ::1] signs_k1_v, const bint has_k0, const short sx, const short sy, const short sz):
+    cdef np.ndarray kernel = group_kernel_by_row(compute_interaction_kernel_3D_c(offsets_v, signs_v, offsets_k0_v, signs_k0_v, offsets_k1_v, signs_k1_v, has_k0, sx, sy, sz))
+    cdef np.ndarray row_ptr = build_row_ptr(kernel, sx * sy * sz)
+    return kernel.flatten(), row_ptr

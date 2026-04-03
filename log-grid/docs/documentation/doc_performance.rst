@@ -77,6 +77,12 @@ PyLogGrid offers two ways to handle parallelization:
 
 To benchmark those two dimensions, two scripts are available in ``Utils``: ``benchmarking_parallel.py`` and ``benchmarking_anyparam.py``.
 
+For quick regressions of the batch-convolution dispatch itself, run::
+
+    python Utils/benchmark_convolve_batch_modes.py --threads 1 2 4 --batches 1 2 4 --n-points 15 --dim 3
+
+This prints JSON timing rows comparing the legacy Python-loop batch path and the grouped C/OpenMP batch path.
+
 benchmarking_parallel.py
 ========================
 
