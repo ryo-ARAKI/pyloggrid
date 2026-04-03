@@ -50,6 +50,10 @@ def _setup_convolver_c(convolver_c) -> None:
     convolver_c.convolve.argtypes = args
     convolver_c.convolve_omp.argtypes = args
 
+    grouped_args = [ui32_1d_type, ui32_1d_type, ct.c_uint32, complex_1d_type, complex_1d_type, complex_1d_type]
+    convolver_c.convolve_grouped.argtypes = grouped_args
+    convolver_c.convolve_grouped_omp.argtypes = grouped_args
+
     args = [
         ui32_1d_type,
         ct.c_uint32,
@@ -66,6 +70,9 @@ def _setup_convolver_c(convolver_c) -> None:
     convolver_c.convolve_list_batch_V2_omp.argtypes = args
     convolver_c.convolve_list_batch_V3_omp.argtypes = args
     convolver_c.convolve_list_batch_V4_omp.argtypes = args
+
+    grouped_batch_args = [ui32_1d_type, ui32_1d_type, ct.c_uint32, complex_1d_type, complex_1d_type, ct.c_uint32, ct.c_uint32, complex_1d_type]
+    convolver_c.convolve_batch_grouped_omp.argtypes = grouped_batch_args
 
     convolver_c.set_omp_threads.argtypes = [ct.c_uint32]
 
@@ -275,7 +282,7 @@ class Maths:
         convolver_c.set_omp_threads(
             n_threads
         )  # In theory we want to minimize the number of calls to this (slow), but we're not supposed to regenerate this object each step so we should be ok
-        self.convolve_c = convolver_c.convolve if self.n_threads == 1 else convolver_c.convolve_omp
+        self.convolve_c = convolver_c.convolve if self.n_threads == 1 else convolver_c.convolve_grouped_omp
         self.convolve_c_batch_V = (
             {
                 2: convolver_c.convolve_list_batch_V2,
@@ -289,13 +296,17 @@ class Maths:
                 4: convolver_c.convolve_list_batch_V4_omp,
             }
         )
-        self.convolve_batch = self._convolve_batch_V if self.n_threads == 1 else self._convolve_batch_list  # list is faster when parallelized (for now)
+        self.convolve_batch = self._convolve_batch_V if self.n_threads == 1 else self._convolve_batch_grouped
 
-        self.convolution_kernel = self.generate_convolution_kernel()  # Kernel for convolutions
+        self.convolution_kernel, self.convolution_row_ptr = self._generate_grouped_convolution_kernel()  # Kernel for convolutions
+        self.convolution_n_rows = self.grid.ks_modulus.size
 
-    def generate_convolution_kernel(
+    def generate_convolution_kernel(self) -> np.ndarray:
+        return self._generate_grouped_convolution_kernel()[0]
+
+    def _generate_grouped_convolution_kernel(
         self,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Generate the convolution kernel (who interacts with who) for log grid convolutions
 
         Returns:
@@ -308,7 +319,7 @@ class Maths:
             and self.cached_conv_kernel["k0"] == self.grid.k0
             and self.cached_conv_kernel["D"] == self.grid.D
         ):
-            return self.cached_conv_kernel["kernel"]
+            return self.cached_conv_kernel["kernel"], self.cached_conv_kernel["row_ptr"]
         a, b = self.grid.l_params["a"], self.grid.l_params["b"]
         if not self.grid.l_params["plastic"] and (a is None and b is None):  # l = 2
             kernel_offsets = [(1, 0), (0, 1), (-1, -1)]
@@ -389,7 +400,7 @@ class Maths:
 
         if self.grid.D == 1:
             # noinspection PyTypeChecker
-            kernel = conv_kernel_generator.compute_interaction_kernel_1D(
+            kernel, row_ptr = conv_kernel_generator.compute_interaction_kernel_1D_grouped(
                 kernel_offsets,
                 kernel_signs,
                 kernel_offsets_k0_ax0,
@@ -399,7 +410,7 @@ class Maths:
             )
         elif self.grid.D == 2:
             # noinspection PyTypeChecker
-            kernel = conv_kernel_generator.compute_interaction_kernel_2D(
+            kernel, row_ptr = conv_kernel_generator.compute_interaction_kernel_2D_grouped(
                 kernel_offsets,
                 kernel_signs,
                 kernel_offsets_k0_ax0,
@@ -412,7 +423,7 @@ class Maths:
             )
         elif self.grid.D == 3:
             # noinspection PyTypeChecker
-            kernel = conv_kernel_generator.compute_interaction_kernel_3D(
+            kernel, row_ptr = conv_kernel_generator.compute_interaction_kernel_3D_grouped(
                 kernel_offsets,
                 kernel_signs,
                 kernel_offsets_k0_ax0,
@@ -427,16 +438,17 @@ class Maths:
         else:
             raise ValueError
         # noinspection PyUnresolvedReferences
-        logger.info(f"Convolution coeffs generated - approx {kernel.shape[0]} triads, kernel size approx {bytes2human(kernel.size * kernel.itemsize)}")
+        logger.info(f"Convolution coeffs generated - approx {kernel.size // 4} triads, kernel size approx {bytes2human(kernel.size * kernel.itemsize)}")
         Maths.cached_conv_kernel = {
             "N": self.grid.N_points,
             "l_params": self.grid.l_params,
             "D": self.grid.D,
             "k0": self.grid.k0,
             "kernel": kernel,
+            "row_ptr": row_ptr,
         }
         # noinspection PyTypeChecker
-        return kernel
+        return kernel, row_ptr
 
     # actual operations below
     @property
@@ -481,7 +493,11 @@ class Maths:
             # noinspection PyUnresolvedReferences
             with self.grid.time_tracker("convolution_C"):
                 # noinspection PyUnresolvedReferences
-                self.convolve_c(self.convolution_kernel, self.convolution_kernel.size, f_flat, g.flatten(), res)
+                g_flat = g.flatten()
+                if self.n_threads == 1:
+                    self.convolve_c(self.convolution_kernel, self.convolution_kernel.size, f_flat, g_flat, res)
+                else:
+                    self.convolve_c(self.convolution_kernel, self.convolution_row_ptr, self.convolution_n_rows, f_flat, g_flat, res)
             res = res.reshape(f.shape)
 
         return res
@@ -494,7 +510,11 @@ class Maths:
             res = np.zeros_like(f_flat)
             with self.grid.time_tracker("convolution_C"):
                 # noinspection PyUnresolvedReferences
-                self.convolve_c(self.convolution_kernel, self.convolution_kernel.size, f_flat, g.flatten(), res)
+                g_flat = g.flatten()
+                if self.n_threads == 1:
+                    self.convolve_c(self.convolution_kernel, self.convolution_kernel.size, f_flat, g_flat, res)
+                else:
+                    self.convolve_c(self.convolution_kernel, self.convolution_row_ptr, self.convolution_n_rows, f_flat, g_flat, res)
             return res
         fsize = fgs[0][0].size
         N_batch = len(fgs)
@@ -567,7 +587,39 @@ class Maths:
         Returns:
             the convolved arrays ``f0*g0``, ``f1*g1``, etc.
         """
+        return self._convolve_batch_list_legacy(fgs)
+
+    def _convolve_batch_list_legacy(self, fgs: list[tuple[np.ndarray, np.ndarray]]) -> Iterable[np.ndarray]:
+        """Legacy threaded fallback kept for direct A/B benchmarking."""
         return [self.convolve(f, g) for (f, g) in fgs]
+
+    def _pack_batch_blocks(self, fgs: list[tuple[np.ndarray, np.ndarray]]) -> tuple[np.ndarray, np.ndarray]:
+        f_block = np.ascontiguousarray([np.ravel(f) for f, _g in fgs], dtype=complex)
+        g_block = np.ascontiguousarray([np.ravel(g) for _f, g in fgs], dtype=complex)
+        return f_block.reshape(-1), g_block.reshape(-1)
+
+    def _convolve_batch_grouped(self, fgs: list[tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
+        with self.grid.time_tracker("convolution"):
+            if len(fgs) == 1:
+                f, g = fgs[0]
+                return np.asarray([self.convolve(f, g)])
+            fsize = fgs[0][0].size
+            n_batch = len(fgs)
+            f_block, g_block = self._pack_batch_blocks(fgs)
+            res = np.zeros((n_batch * fsize,), dtype=fgs[0][0].dtype)
+            with self.grid.time_tracker("convolution_C"):
+                # noinspection PyUnresolvedReferences
+                convolver_c.convolve_batch_grouped_omp(
+                    self.convolution_kernel,
+                    self.convolution_row_ptr,
+                    self.convolution_n_rows,
+                    f_block,
+                    g_block,
+                    fsize,
+                    n_batch,
+                    res,
+                )
+            return res.reshape((n_batch,) + fgs[0][0].shape)
 
     @staticmethod
     def cross2D(a: ArrayLike, b: ArrayLike) -> np.ndarray:

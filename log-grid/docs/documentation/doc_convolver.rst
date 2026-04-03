@@ -24,6 +24,16 @@ Convolution kernel
 
 ``compute_convolution_kernel.pyx`` exposes one function for each ``D=1,2,3`` dimention: ``compute_interaction_kernel_[123]D``.
 
+Grouped kernel layout
+*********************
+
+The convolution kernel is now stored as two arrays:
+
+* ``kernel``: the flat ``(dst, src1, src2, conj_flag)`` entries
+* ``row_ptr``: CSR-style offsets delimiting the contiguous slice of ``kernel`` used for each output mode
+
+For grouped execution, the flat entries are ordered by ``dst`` so each output row maps to one contiguous range. This lets the threaded grouped path accumulate into a thread-local scalar for one output mode and write the final value once.
+
 The script is written in such a way that computing the kernel is done with the same code for ``k0=True`` and ``k0=False``.
 
 Although optimizing this part is not *critical* (since it's only run once), we kept this optimized code from earlier versions of the framework.
@@ -50,7 +60,7 @@ Based on internal benchmarks, we chose different functions for different situati
 Batches
 -------
 
-* To convolve two functions ``f, g``, :func:`~pyloggrid.LogGrid.Grid.Maths.convolve` uses ``convolver_c.convolve`` if ``n_threads==1``, else ``convolver_c.convolve_omp``.
+* To convolve two functions ``f, g``, :func:`~pyloggrid.LogGrid.Grid.Maths.convolve` uses ``convolver_c.convolve`` if ``n_threads==1``, else ``convolver_c.convolve_grouped_omp``.
 * To convolve a list of function couples ``[(f1, g1), g(2, g2), ...]``, :func:`~pyloggrid.LogGrid.Grid.Maths.convolve_batch` we use:
 
     * if ``n_threads==1``:
@@ -58,7 +68,7 @@ Batches
         * ``convolver_c.convolve_list_batch_V2`` for 2 couples
         * ``convolver_c.convolve_list_batch_V3`` for 3 couples
         * ``convolver_c.convolve_list_batch_V4`` for 4+ couples
-    * otherwise it uses :func:`~pyloggrid.LogGrid.Grid.Maths._convolve_batch_list`, which is faster than ``convolver_c.convolve_list_batch_V[234]_omp``.
+    * otherwise it uses :func:`~pyloggrid.LogGrid.Grid.Maths._convolve_batch_grouped`, while :func:`~pyloggrid.LogGrid.Grid.Maths._convolve_batch_list_legacy` is kept for direct A/B benchmarking.
 
 .. _C code:
 
@@ -70,7 +80,6 @@ Although we don't offer compile PyLogGrid for MSVC on Windows (see :ref:`Windows
 Functions containing ``_V`` are designed to take advantage of `AVX <https://en.wikipedia.org/wiki/Advanced_Vector_Extensions>`_.
 
 In particular, ``convolve_list_batch_V[N=1,2,3,4]_omp`` compute ``N`` convolutions in parallel. Although in theory some architectures could benefit from ``N=8`` and higher, we found no practical benefit on our end.
-
 
 
 
